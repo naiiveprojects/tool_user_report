@@ -1,0 +1,274 @@
+[gd_scene load_steps=2 format=3 uid="uid://dj7ywsa7wgpj3"]
+
+[sub_resource type="GDScript" id="GDScript_m0jws"]
+script/source = "extends PanelContainer
+
+## trello API url
+const API_URL := \"https://api.trello.com/1\"
+
+# get a KEY and generate a TOKEN by visiting [https://trello.com/app-key]
+const KEY := \"TO_BE_FILLED_BY_DEV\"
+const TOKEN := \"TO_BE_FILLED_BY_DEV\"
+const KEY_TOKEN := \"?key=\" + KEY + \"&token=\" + TOKEN
+
+## trello List ID (Card)
+## to find the trello list id, the easiest way is to look up your Trello board, create the list you want to use, add a card, 
+## click on the card and add \".json\" to the url in the top
+## you can then search for idList\" - string behind that is the list_id below.
+const LIST_ID := \"TO_BE_FILLED_BY_DEV\"
+
+## Trello Label
+# if you don't want to use labels, just leave this dictionary empty, you can add as many labels as you need by just expanding the library
+# to find out the label ids, use the same way as with the list ids. look for the label ids in the Trello json.
+const trello_labels := {
+	# label : id <= Guide
+	\"Report\": \"\", # Leave empty for !label
+	\"example\": \"TO_BE_FILLED_BY_DEV\",
+}
+
+## Task State
+enum tasks {IDLE, CREATE_CARD, GET_CARD_ID, ADD_LABEL, ADD_ATTACHMENT}
+
+## Variable :)
+var current_hash := 0
+var current_card_id := \"\"
+
+## Current Task State
+var state := tasks.IDLE
+
+@onready var http_request: HTTPRequest = $HTTPRequest
+@onready var node_container: VBoxContainer = $Container
+@onready var node_title: LineEdit = $Container/Title
+@onready var node_description: TextEdit = $Container/Description
+@onready var node_type: OptionButton = $Container/Type
+@onready var button_feed: Button = $Feed
+@onready var button_system: Button = $Container/Option/System
+@onready var button_screenshot: Button = $Container/Option/Screenshot
+@onready var button_info: Button = $Container/Option/Info
+@onready var button_send: Button = $Container/Send
+
+
+func _ready() -> void:
+	node_type.clear()
+	# assign label type
+	for label in trello_labels:
+		node_type.add_item(label)
+	node_type.selected = 0
+
+
+func _send_pressed() -> void:
+	node_container.hide()
+	button_feed.show()
+	button_feed.text = \"INITIALIZING\"
+	create_card()
+
+
+func _http_request_request_completed(
+	_result: int,
+	response_code: int,
+	_headers: PackedStringArray,
+	body: PackedByteArray
+) -> void:
+	# Add respond code
+	button_feed.text += \"\\nR: \" + str(response_code)
+	
+	if state == tasks.CREATE_CARD:
+		print_debug(\"CREATE_CARD -> \" + str(response_code))
+		get_card_id()
+		return
+	
+	elif state == tasks.GET_CARD_ID and current_card_id == \"\":
+		print_debug(\"GET_CARD_ID -> \" + str(response_code))
+		var dict_result = JSON.parse_string(body.get_string_from_utf8())
+		if dict_result == null:
+			print_debug(\"ERROR -> \" + str(response_code))
+			button_feed.text += \"\\nERROR: \" + str(response_code)
+			return
+		
+		for i in dict_result:
+			if str(current_hash) in i.name:
+				current_card_id = i.id
+				add_label_to_card()
+				return
+	
+	elif state == tasks.ADD_LABEL:
+		print_debug(\"ADD_LABEL -> \" + str(response_code))
+		
+		# (Optional) Add something, in this case, we add a screenshots
+		if button_screenshot.pressed:
+			add_attachment()
+		else:
+			_task_complete()
+	
+	elif state == tasks.ADD_ATTACHMENT:
+		_task_complete()
+
+
+func create_card() -> void:
+	state = tasks.CREATE_CARD
+	button_feed.text = \"Creating Report\"
+	
+	var datetime_os :Dictionary = Time.get_date_dict_from_system()
+	var datetime_tr :String = \"\"
+	for date in datetime_os:
+		if date != \"dst\":
+			datetime_tr += str(datetime_os.get(date))
+	current_hash = int(datetime_tr)
+	
+	# (Modify) Create a title for the card
+	var current_card_title = str(OS.get_name() + \" | \" + node_title.text + \" | \" + str(current_hash))
+	
+	var current_card_desc = node_description.text
+	
+	# (Modify) Add Some More information on Description
+	current_card_desc += \"\\n\\n\\n\\n____\"
+	current_card_desc += \"\\n**Proc:** \" + str(OS.get_processor_count())
+	current_card_desc += \"\\n**Adapter:** \" + str(RenderingServer.get_video_adapter_name())
+	current_card_desc += \"\\n**API:** \" + str(RenderingServer.get_video_adapter_api_version())
+	current_card_desc += \"\\n____\"
+	
+	var query = API_URL + \"/cards\" + KEY_TOKEN
+	query += \"&idList=\" + LIST_ID
+	query += \"&name=\" + current_card_title.uri_encode()
+	query += \"&desc=\" + current_card_desc.uri_encode()
+	query += \"&pos=top\"
+	
+	http_request.request(query, [], HTTPClient.METHOD_POST)
+
+
+func get_card_id() -> void:
+	state = tasks.GET_CARD_ID
+	button_feed.text = \"Getting Report ID\"
+	
+	var query = API_URL + \"/lists/\" + LIST_ID + \"/cards\" + KEY_TOKEN
+	
+	http_request.request(query, [], HTTPClient.METHOD_GET)
+
+
+func add_label_to_card() -> void:
+	state = tasks.ADD_LABEL
+	
+	var type = trello_labels[node_type.get_item_text(node_type.selected)]
+	var query = API_URL + \"/cards/\" + current_card_id + \"/idLabels\" + KEY_TOKEN + \"&value=\" + type
+	
+	http_request.request(query, [], HTTPClient.METHOD_POST)
+
+
+func add_attachment() -> void:
+	state = tasks.ADD_ATTACHMENT
+	button_feed.text = \"Adding Screenshots\"
+	
+	var headers = [\"Content-Type: multipart/form-data; boundary=GodotFileUploadBoundaryZ29kb3RmaWxl\"]
+	var path = API_URL + \"/cards/\" + current_card_id + \"/attachments\" + KEY_TOKEN
+	
+	# Create Screenshots
+	var image = get_tree().root.get_viewport().get_texture().get_image()
+	
+	# Create the .......
+	var boundary_start = \"--GodotFileUploadBoundaryZ29kb3RmaWxl\\r\\n\".to_ascii_buffer()
+	var body = boundary_start
+	body += (\"Content-Disposition: form-data; name=\\\"key\\\"\\r\\n\\r\\n\" + KEY + \"\\r\\n\").to_ascii_buffer()
+	body += boundary_start
+	body += (\"Content-Disposition: form-data; name=\\\"token\\\"\\r\\n\\r\\n\" + TOKEN + \"\\r\\n\").to_ascii_buffer()
+	body += boundary_start
+	body += (\"Content-Disposition: form-data; name=\\\"name\\\"\\r\\n\\r\\nImage-\"+str(current_hash)+\"\\r\\n\").to_ascii_buffer()
+	body += boundary_start
+	body += (\"Content-Disposition: form-data; name=\\\"setCover\\\"\\r\\n\\r\\ntrue\\r\\n\").to_ascii_buffer()
+	body += boundary_start
+	body += (\"Content-Disposition: form-data; name=\\\"file\\\"; filename=\\\"Image_\"+str(current_hash)+\".png\\\"\\r\\nContent-Type: image/png\\r\\n\\r\\n\").to_ascii_buffer()
+	body += image.save_png_to_buffer() # <- the screenshot it self
+	body += (\"\\r\\n--GodotFileUploadBoundaryZ29kb3RmaWxl--\\r\\n\").to_ascii_buffer()
+	
+# # (Optional) Save Screenshot, Please Define The Path
+#	var path = \"report %s.png\"
+#	var naming = path % str(current_hash)
+#	image.save_png(naming)
+	
+	http_request.request_raw(path, headers, HTTPClient.METHOD_POST, body)
+
+
+func _task_complete() -> void:
+	button_feed.text = \"Report sent successfully!\"
+	button_feed.text += \"\\nPress To Close\"
+	await button_feed.pressed
+	
+	# (Modify) Something to do after rerport is completed
+	if get_parent() is Window and get_parent()!= get_tree().root:
+		get_parent().queue_free()
+	else:
+		queue_free()
+
+
+## Hide Description if title is empty
+func _title_text_changed(new_text: String) -> void:
+	node_description.visible = bool(new_text != \"\")
+	if !node_description.visible:
+		button_send.visible = false
+
+
+## Hide Send Button if description is empty
+func _description_text_changed() -> void:
+	button_send.visible = bool(node_description.text != \"\")
+"
+
+[node name="UserReportTool" type="PanelContainer"]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -123.5
+offset_top = -45.0
+offset_right = 123.5
+offset_bottom = 45.0
+grow_horizontal = 2
+grow_vertical = 2
+script = SubResource("GDScript_m0jws")
+
+[node name="HTTPRequest" type="HTTPRequest" parent="."]
+
+[node name="Container" type="VBoxContainer" parent="."]
+layout_mode = 2
+
+[node name="Title" type="LineEdit" parent="Container"]
+layout_mode = 2
+placeholder_text = "Enter Title"
+
+[node name="Description" type="TextEdit" parent="Container"]
+visible = false
+custom_minimum_size = Vector2(128, 128)
+layout_mode = 2
+
+[node name="Type" type="OptionButton" parent="Container"]
+layout_mode = 2
+
+[node name="Option" type="HBoxContainer" parent="Container"]
+layout_mode = 2
+
+[node name="System" type="Button" parent="Container/Option"]
+layout_mode = 2
+size_flags_horizontal = 3
+disabled = true
+toggle_mode = true
+text = "System"
+
+[node name="Screenshot" type="Button" parent="Container/Option"]
+layout_mode = 2
+size_flags_horizontal = 3
+toggle_mode = true
+button_pressed = true
+text = "Screenshots"
+
+[node name="Send" type="Button" parent="Container"]
+visible = false
+layout_mode = 2
+text = "Send"
+
+[node name="Feed" type="Button" parent="."]
+visible = false
+layout_mode = 2
+
+[connection signal="request_completed" from="HTTPRequest" to="." method="_http_request_request_completed"]
+[connection signal="text_changed" from="Container/Title" to="." method="_title_text_changed"]
+[connection signal="text_changed" from="Container/Description" to="." method="_description_text_changed"]
+[connection signal="pressed" from="Container/Send" to="." method="_send_pressed"]
