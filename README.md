@@ -14,7 +14,3 @@ please use it wisely, double check the code and make sure you use a dummy accoun
 I am not responsible for any damage or loss when you use this code.
 
 ----
-
-- ToDo
-    - Create documentation if necessary
-    - profit
